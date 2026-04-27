@@ -50,6 +50,15 @@ def safe_inv(a: torch.Tensor, eps: float = 1e-4) -> torch.Tensor:
     denom = a.sign() * a.abs().clamp_min(eps)
     return 1.0 / denom
 
+def safe_exp(a: torch.Tensor, clip: float = 20.0) -> torch.Tensor:
+    a = torch.nan_to_num(a, nan=0.0, posinf=clip, neginf=-clip)
+    a = a.clamp(-clip, clip)
+    return torch.exp(a)
+
+def safe_log(a: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    a = torch.nan_to_num(a, nan=0.0, posinf=1e6, neginf=-1e6)
+    return torch.log(a.abs().clamp_min(eps))
+
 
 # ----------------------------
 # Operator specification
@@ -75,6 +84,8 @@ def default_operator_set() -> List[OperatorSpec]:
     ops.append(OperatorSpec("sin", 1, lambda a, b=None: safe_sin(a)))
     ops.append(OperatorSpec("cos", 1, lambda a, b=None: safe_cos(a)))
     ops.append(OperatorSpec("inv", 1, lambda a, b=None: safe_inv(a)))
+    ops.append(OperatorSpec("exp", 1, lambda a, b=None: safe_exp(a)))
+    ops.append(OperatorSpec("log", 1, lambda a, b=None: safe_log(a)))
     
     return ops
 
@@ -89,6 +100,8 @@ def make_operator_set(names: List[str]) -> List[OperatorSpec]:
         "sin": OperatorSpec("sin", 1, lambda a, b=None: safe_sin(a)),
         "cos": OperatorSpec("cos", 1, lambda a, b=None: safe_cos(a)),
         "inv": OperatorSpec("inv", 1, lambda a, b=None: safe_inv(a)),
+        "exp": OperatorSpec("exp", 1, lambda a, b=None: safe_exp(a)),
+        "log": OperatorSpec("log", 1, lambda a, b=None: safe_log(a)),
     }
     return [name_to_op[nm] for nm in names]
 
