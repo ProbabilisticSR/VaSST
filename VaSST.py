@@ -37,12 +37,10 @@ def safe_pow(a: torch.Tensor, power: float, eps: float = 1e-6) -> torch.Tensor:
 
 def safe_sin(a: torch.Tensor) -> torch.Tensor:
     a = torch.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0)
-    a = a.clamp(-50.0, 50.0)
     return torch.sin(a)
 
 def safe_cos(a: torch.Tensor) -> torch.Tensor:
     a = torch.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0)
-    a = a.clamp(-50.0, 50.0)
     return torch.cos(a)
 
 def safe_inv(a: torch.Tensor, eps: float = 1e-4) -> torch.Tensor:
