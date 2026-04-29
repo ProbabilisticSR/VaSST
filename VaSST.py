@@ -952,3 +952,494 @@ def rank_hard_tree_samples_by_rmse(
     print(beta_top.to_string(index=False))
 
     return expr_top, beta_top
+
+##############################################################################################################
+
+# ============================================================
+# Posterior-aware ranking of hard VaSST forests
+# Ranking by:
+#   JMP(T) = log p(y | T) + log pi(T)
+# Also returns ranking by log p(y | T) alone.
+# ============================================================
+
+def _log_dirichlet_integrated_categorical_counts(
+    counts: torch.Tensor,
+    eta: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Computes
+
+        log int prod_m w_m^{counts_m} Dir(w; eta) dw
+
+    which equals
+
+        log B(eta + counts) - log B(eta).
+
+    This is the integrated categorical likelihood under a Dirichlet prior.
+    """
+    counts = counts.to(device=eta.device, dtype=eta.dtype)
+
+    eta0 = eta.sum()
+    counts0 = counts.sum()
+
+    return (
+        torch.lgamma(eta0)
+        - torch.lgamma(eta0 + counts0)
+        + torch.lgamma(eta + counts).sum()
+        - torch.lgamma(eta).sum()
+    )
+
+
+def _forest_counts_and_split_logprior(
+    model: "VaSST",
+    e_hat: torch.Tensor,   # [K, N]
+    op_hat: torch.Tensor,  # [K, N]
+    ft_hat: torch.Tensor,  # [K, N]
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Computes:
+      1. log split prior under depth-dependent Bernoulli splitting,
+      2. operator counts over expanded internal nodes,
+      3. feature counts over terminal nodes.
+
+    Important:
+    - Only reachable nodes are counted.
+    - If a node is not expanded, its descendants are ignored.
+    - If an internal node is not expanded, it becomes a terminal feature node.
+    - Leaves are always terminal feature nodes.
+    """
+
+    device = e_hat.device
+    dtype = model.e_logits.dtype
+
+    K, N = e_hat.shape
+
+    split_probs = model.split_prior_probs().to(device=device, dtype=dtype)
+
+    op_counts = torch.zeros(model.M, device=device, dtype=dtype)
+    ft_counts = torch.zeros(model.p, device=device, dtype=dtype)
+
+    log_split_prior = torch.zeros((), device=device, dtype=dtype)
+
+    def traverse_tree(k: int, i: int):
+        nonlocal log_split_prior, op_counts, ft_counts
+
+        if i >= N:
+            return
+
+        # Leaves are terminal with probability 1 under the skeleton.
+        if is_leaf(i, N):
+            fidx = int(ft_hat[k, i].item())
+            ft_counts[fidx] += 1.0
+            return
+
+        expanded = int(e_hat[k, i].item()) == 1
+
+        p_split_i = split_probs[i].clamp(1e-8, 1.0 - 1e-8)
+
+        if expanded:
+            # Split prior contribution
+            log_split_prior = log_split_prior + torch.log(p_split_i)
+
+            # Operator choice is only active if node is expanded
+            oidx = int(op_hat[k, i].item())
+            op_counts[oidx] += 1.0
+
+            l, r = heap_children(i)
+            traverse_tree(k, l)
+            traverse_tree(k, r)
+
+        else:
+            # Stop prior contribution
+            log_split_prior = log_split_prior + torch.log1p(-p_split_i)
+
+            # Terminal feature choice
+            fidx = int(ft_hat[k, i].item())
+            ft_counts[fidx] += 1.0
+
+            # Descendants ignored because this node is terminal.
+            return
+
+    for k in range(K):
+        traverse_tree(k, 0)
+
+    return log_split_prior, op_counts, ft_counts
+
+
+def forest_log_prior_integrated(
+    model: "VaSST",
+    e_hat: torch.Tensor,
+    op_hat: torch.Tensor,
+    ft_hat: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Computes the integrated forest prior:
+
+        log pi(T)
+        =
+        log pi_split(e)
+        +
+        log int prod active_op_nodes w_op[o_i] Dir(w_op; eta_op) dw_op
+        +
+        log int prod terminal_nodes w_ft[f_i] Dir(w_ft; eta_ft) dw_ft.
+
+    This corresponds to integrating out the global operator and feature
+    probability vectors.
+    """
+
+    device = e_hat.device
+    dtype = model.e_logits.dtype
+
+    log_split_prior, op_counts, ft_counts = _forest_counts_and_split_logprior(
+        model=model,
+        e_hat=e_hat,
+        op_hat=op_hat,
+        ft_hat=ft_hat,
+    )
+
+    eta_op = model.eta_op_prior.to(device=device, dtype=dtype)
+    eta_ft = model.eta_ft_prior.to(device=device, dtype=dtype)
+
+    log_op_prior = _log_dirichlet_integrated_categorical_counts(
+        counts=op_counts,
+        eta=eta_op,
+    )
+
+    log_ft_prior = _log_dirichlet_integrated_categorical_counts(
+        counts=ft_counts,
+        eta=eta_ft,
+    )
+
+    return log_split_prior + log_op_prior + log_ft_prior
+
+
+def rank_hard_tree_samples_by_jmp(
+    model: "VaSST",
+    X: torch.Tensor,
+    y: torch.Tensor,
+    n_samples: int = 500,
+    include_intercept: bool = True,
+    jitter: float = 1e-3,
+    standardize_xy: bool = False,
+    top_k: int = 10,
+    feature_names: Optional[List[str]] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Samples hard VaSST forests and ranks them using two criteria:
+
+    1. Joint marginal posterior score:
+
+           JMP(T) = log p(y | T) + log pi(T)
+
+    2. Marginal likelihood alone:
+
+           log p(y | T)
+
+    Returns:
+      - expr_top_jmp:  top forests by JMP
+      - beta_top_jmp:  beta posterior means for top JMP forests
+      - expr_top_logm: top forests by log p(y | T)
+      - beta_top_logm: beta posterior means for top log p(y | T) forests
+    """
+
+    if pd is None:
+        raise RuntimeError("pandas is required for posterior-aware ranking.")
+
+    device, dtype = X.device, X.dtype
+
+    if feature_names is None:
+        feature_names = [f"x{j}" for j in range(model.p)]
+
+    X_in = torch.nan_to_num(X, nan=0.0, posinf=1e6, neginf=-1e6)
+    y_in = torch.nan_to_num(y.reshape(-1), nan=0.0, posinf=1e6, neginf=-1e6)
+
+    if standardize_xy:
+        with torch.no_grad():
+            Xm = X_in.mean(dim=0, keepdim=True)
+            Xs = X_in.std(dim=0, keepdim=True).clamp_min(1e-6)
+            X_use = (X_in - Xm) / Xs
+
+            ym = y_in.mean()
+            ys = y_in.std().clamp_min(1e-6)
+            y_use = (y_in - ym) / ys
+    else:
+        X_use = X_in
+        y_use = y_in
+
+    rows_expr: List[Dict[str, Any]] = []
+    rows_beta: List[Dict[str, Any]] = []
+
+    for s in range(int(n_samples)):
+        e_hat_list, op_hat_list, ft_hat_list = [], [], []
+
+        expr_row: Dict[str, Any] = {
+            "sample_id": s,
+        }
+
+        # ----------------------------------------------------
+        # Sample one hard tree for each ensemble member
+        # ----------------------------------------------------
+        for k in range(model.K):
+            smp = sample_hard_tree(model, k=k)
+
+            e_hat_list.append(smp["e_hat"])
+            op_hat_list.append(smp["op_hat"])
+            ft_hat_list.append(smp["ft_hat"])
+
+            expr_row[f"tree_{k}"] = tree_to_expression(
+                smp["e_hat"],
+                smp["op_hat"],
+                smp["ft_hat"],
+                operators=model.ops,
+                feature_names=feature_names,
+            )
+
+        e_hat = torch.stack(e_hat_list, dim=0).to(device=device)
+        op_hat = torch.stack(op_hat_list, dim=0).to(device=device)
+        ft_hat = torch.stack(ft_hat_list, dim=0).to(device=device)
+
+        # Enforce leaves as terminal.
+        e_hat = torch.where(
+            model.leaf_mask.unsqueeze(0),
+            torch.zeros_like(e_hat),
+            e_hat,
+        )
+
+        # ----------------------------------------------------
+        # Build hard-tree design matrix
+        # ----------------------------------------------------
+        T = evaluate_hard_trees(
+            model=model,
+            X=X_use,
+            e_hat=e_hat,
+            op_hat=op_hat,
+            ft_hat=ft_hat,
+        )
+
+        T = torch.nan_to_num(T, nan=0.0, posinf=1e6, neginf=-1e6)
+
+        # ----------------------------------------------------
+        # Compute log p(y | T), posterior beta mean, sigma2 mean
+        # ----------------------------------------------------
+        if include_intercept:
+            ones = torch.ones(T.shape[0], 1, device=device, dtype=dtype)
+            T_aug = torch.cat([ones, T], dim=1)
+
+            K_aug = model.K + 1
+
+            mu0_aug = torch.zeros(K_aug, device=device, dtype=dtype)
+
+            sigma0_diag = float(model.blr_hyp.Sigma0[0, 0].detach().cpu())
+            Sigma0_aug = torch.eye(K_aug, device=device, dtype=dtype) * sigma0_diag
+
+            hyp = BLRHyperparams(
+                mu0=mu0_aug,
+                Sigma0=Sigma0_aug,
+                a0=model.blr_hyp.a0,
+                b0=model.blr_hyp.b0,
+            )
+
+            log_marginal = log_marginal_likelihood_blr(
+                y=y_use,
+                T=T_aug,
+                hyp=hyp,
+                jitter=jitter,
+            )
+
+            post = blr_posterior_from_design(
+                y=y_use,
+                T=T_aug,
+                hyp=hyp,
+                jitter=jitter,
+            )
+
+            beta_mean = post["mu_n"]
+            sigma2_mean = float(post["E_sigma2"].detach().cpu())
+
+            y_hat = T_aug @ beta_mean
+            coef_names = ["intercept"] + [f"tree_{k}" for k in range(model.K)]
+
+        else:
+            log_marginal = log_marginal_likelihood_blr(
+                y=y_use,
+                T=T,
+                hyp=model.blr_hyp,
+                jitter=jitter,
+            )
+
+            post = blr_posterior_from_design(
+                y=y_use,
+                T=T,
+                hyp=model.blr_hyp,
+                jitter=jitter,
+            )
+
+            beta_mean = post["mu_n"]
+            sigma2_mean = float(post["E_sigma2"].detach().cpu())
+
+            y_hat = T @ beta_mean
+            coef_names = [f"tree_{k}" for k in range(model.K)]
+
+        # ----------------------------------------------------
+        # Compute integrated tree prior log pi(T)
+        # ----------------------------------------------------
+        log_tree_prior = forest_log_prior_integrated(
+            model=model,
+            e_hat=e_hat,
+            op_hat=op_hat,
+            ft_hat=ft_hat,
+        )
+
+        jmp = log_marginal + log_tree_prior
+
+        # ----------------------------------------------------
+        # RMSE against observed y
+        # ----------------------------------------------------
+        rmse = float(
+            torch.sqrt(torch.mean((y_use - y_hat) ** 2)).detach().cpu()
+        )
+
+        log_marginal_float = float(log_marginal.detach().cpu())
+        log_tree_prior_float = float(log_tree_prior.detach().cpu())
+        jmp_float = float(jmp.detach().cpu())
+
+        # ----------------------------------------------------
+        # Store expression row
+        # ----------------------------------------------------
+        expr_row["rmse"] = rmse
+        expr_row["sigma2_mean"] = sigma2_mean
+        expr_row["log_marginal"] = log_marginal_float
+        expr_row["log_tree_prior"] = log_tree_prior_float
+        expr_row["jmp"] = jmp_float
+
+        rows_expr.append(expr_row)
+
+        # ----------------------------------------------------
+        # Store beta row
+        # ----------------------------------------------------
+        beta_row: Dict[str, Any] = {
+            "sample_id": s,
+            "rmse": rmse,
+            "sigma2_mean": sigma2_mean,
+            "log_marginal": log_marginal_float,
+            "log_tree_prior": log_tree_prior_float,
+            "jmp": jmp_float,
+        }
+
+        beta_mean_cpu = beta_mean.detach().cpu()
+
+        for j, nm in enumerate(coef_names):
+            beta_row[nm] = float(beta_mean_cpu[j].item())
+
+        rows_beta.append(beta_row)
+
+    df_expr = pd.DataFrame(rows_expr)
+    df_beta = pd.DataFrame(rows_beta)
+
+    tree_cols = [f"tree_{k}" for k in range(model.K)]
+    coef_cols = (["intercept"] if include_intercept else []) + tree_cols
+
+    expr_cols = [
+        "rank",
+        "sample_id",
+        "rmse",
+        "sigma2_mean",
+        "log_marginal",
+        "log_tree_prior",
+        "jmp",
+    ] + tree_cols
+
+    beta_cols = [
+        "rank",
+        "sample_id",
+        "rmse",
+        "sigma2_mean",
+        "log_marginal",
+        "log_tree_prior",
+        "jmp",
+    ] + coef_cols
+
+    # ========================================================
+    # Top forests by JMP
+    # ========================================================
+    df_expr_jmp_sorted = df_expr.sort_values(
+        "jmp",
+        ascending=False,
+    ).reset_index(drop=True)
+
+    top_ids_jmp = df_expr_jmp_sorted["sample_id"].head(top_k).tolist()
+
+    expr_top_jmp = df_expr[
+        df_expr["sample_id"].isin(top_ids_jmp)
+    ].copy()
+
+    beta_top_jmp = df_beta[
+        df_beta["sample_id"].isin(top_ids_jmp)
+    ].copy()
+
+    expr_top_jmp = expr_top_jmp.sort_values(
+        "jmp",
+        ascending=False,
+    ).reset_index(drop=True)
+
+    beta_top_jmp = beta_top_jmp.sort_values(
+        "jmp",
+        ascending=False,
+    ).reset_index(drop=True)
+
+    expr_top_jmp.insert(0, "rank", range(1, len(expr_top_jmp) + 1))
+    beta_top_jmp.insert(0, "rank", range(1, len(beta_top_jmp) + 1))
+
+    expr_top_jmp = expr_top_jmp[expr_cols]
+    beta_top_jmp = beta_top_jmp[beta_cols]
+
+    # ========================================================
+    # Top forests by log p(y | T)
+    # ========================================================
+    df_expr_logm_sorted = df_expr.sort_values(
+        "log_marginal",
+        ascending=False,
+    ).reset_index(drop=True)
+
+    top_ids_logm = df_expr_logm_sorted["sample_id"].head(top_k).tolist()
+
+    expr_top_logm = df_expr[
+        df_expr["sample_id"].isin(top_ids_logm)
+    ].copy()
+
+    beta_top_logm = df_beta[
+        df_beta["sample_id"].isin(top_ids_logm)
+    ].copy()
+
+    expr_top_logm = expr_top_logm.sort_values(
+        "log_marginal",
+        ascending=False,
+    ).reset_index(drop=True)
+
+    beta_top_logm = beta_top_logm.sort_values(
+        "log_marginal",
+        ascending=False,
+    ).reset_index(drop=True)
+
+    expr_top_logm.insert(0, "rank", range(1, len(expr_top_logm) + 1))
+    beta_top_logm.insert(0, "rank", range(1, len(beta_top_logm) + 1))
+
+    expr_top_logm = expr_top_logm[expr_cols]
+    beta_top_logm = beta_top_logm[beta_cols]
+
+    # --------------------------------------------------------
+    # Print
+    # --------------------------------------------------------
+    print("\n=== TOP samples by JMP = log p(y | T) + log pi(T) ===")
+    print(expr_top_jmp.to_string(index=False))
+
+    print("\n=== TOP beta means by JMP ===")
+    print(beta_top_jmp.to_string(index=False))
+
+    print("\n=== TOP samples by log marginal likelihood log p(y | T) ===")
+    print(expr_top_logm.to_string(index=False))
+
+    print("\n=== TOP beta means by log marginal likelihood ===")
+    print(beta_top_logm.to_string(index=False))
+
+    return expr_top_jmp, beta_top_jmp, expr_top_logm, beta_top_logm
