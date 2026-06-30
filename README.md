@@ -64,6 +64,7 @@ Texas A&M University, College Station, TX, USA
 $$y_i = \beta_0 + \sum_{k=1}^K \beta_k f_k(\boldsymbol{x}_i) + \epsilon_i, \quad \epsilon_i\sim \mathrm{N}(0, \sigma^2).$$
 
 * Each $f_k(\boldsymbol{x})$ is a symbolic expression with a tree representation $\mathsf{T}(f_k)$.
+* Priors are endowed upon regression parameters and symbolic tree structures.
 * Trees are learned via soft relaxations.
 * Coefficients are integrated out using collapsed Bayesian linear regression (BLR).
 
@@ -327,7 +328,7 @@ expr_top_lmpse, beta_top_lmpse, expr_top_logm, beta_top_logm = rank_hard_tree_sa
 
 ## Data Study using Feynman Symbolic Regression Database (FSReD)
 
-For the Feynman equation database (equation IDs: `I.12.2`, `I.13.12`, `I.12.11`, `II.2.42`, and `III_17_37`), visit:  https://space.mit.edu/home/tegmark/aifeynman.html
+For the Feynman equation database (equation IDs: `I.12.2`, `I.13.12`, `I.12.11`, `II.2.42`, and `III_17_37`), visit:  https://space.mit.edu/home/tegmark/aifeynman.html.
 
 ---
 
