@@ -20,12 +20,6 @@ from io import StringIO
 import time
 import re
 
-# try:
-#     import pandas as pd
-# except Exception:
-#     pd = None
-
-
 # ----------------------------
 # Utilities
 # ----------------------------
@@ -817,9 +811,6 @@ def rank_hard_tree_samples_by_rmse(
     feature_names: Optional[List[str]] = None,
 ) -> Tuple["pd.DataFrame|list", "pd.DataFrame|list"]:
 
-    # if pd is None:
-    #     raise RuntimeError("pandas is required for wide tables. `pip install pandas`")
-
     device, dtype = X.device, X.dtype
     if feature_names is None:
         feature_names = [f"x{j}" for j in range(model.p)]
@@ -958,7 +949,7 @@ def rank_hard_tree_samples_by_rmse(
 # ============================================================
 # Posterior-aware ranking of hard VaSST forests
 # Ranking by:
-#   JMP(T) = log p(y | T) + log pi(T)
+#   LMPSE(T) = log p(y | T) + log pi(T)
 # Also returns ranking by log p(y | T) alone.
 # ============================================================
 
@@ -1113,7 +1104,7 @@ def forest_log_prior_integrated(
     return log_split_prior + log_op_prior + log_ft_prior
 
 
-def rank_hard_tree_samples_by_jmp(
+def rank_hard_tree_samples_by_lmpse(
     model: "VaSST",
     X: torch.Tensor,
     y: torch.Tensor,
@@ -1129,15 +1120,15 @@ def rank_hard_tree_samples_by_jmp(
 
     1. Joint marginal posterior score:
 
-           JMP(T) = log p(y | T) + log pi(T)
+           LMPSE(T) = log p(y | T) + log pi(T)
 
     2. Marginal likelihood alone:
 
            log p(y | T)
 
     Returns:
-      - expr_top_jmp:  top forests by JMP
-      - beta_top_jmp:  beta posterior means for top JMP forests
+      - expr_top_lmpse:  top forests by LMPSE
+      - beta_top_lmpse:  beta posterior means for top LMPSE forests
       - expr_top_logm: top forests by log p(y | T)
       - beta_top_logm: beta posterior means for top log p(y | T) forests
     """
@@ -1290,7 +1281,7 @@ def rank_hard_tree_samples_by_jmp(
             ft_hat=ft_hat,
         )
 
-        jmp = log_marginal + log_tree_prior
+        lmpse = log_marginal + log_tree_prior
 
         # ----------------------------------------------------
         # RMSE against observed y
@@ -1301,7 +1292,7 @@ def rank_hard_tree_samples_by_jmp(
 
         log_marginal_float = float(log_marginal.detach().cpu())
         log_tree_prior_float = float(log_tree_prior.detach().cpu())
-        jmp_float = float(jmp.detach().cpu())
+        lmpse_float = float(lmpse.detach().cpu())
 
         # ----------------------------------------------------
         # Store expression row
@@ -1310,7 +1301,7 @@ def rank_hard_tree_samples_by_jmp(
         expr_row["sigma2_mean"] = sigma2_mean
         expr_row["log_marginal"] = log_marginal_float
         expr_row["log_tree_prior"] = log_tree_prior_float
-        expr_row["jmp"] = jmp_float
+        expr_row["lmpse"] = lmpse_float
 
         rows_expr.append(expr_row)
 
@@ -1323,7 +1314,7 @@ def rank_hard_tree_samples_by_jmp(
             "sigma2_mean": sigma2_mean,
             "log_marginal": log_marginal_float,
             "log_tree_prior": log_tree_prior_float,
-            "jmp": jmp_float,
+            "lmpse": lmpse_float,
         }
 
         beta_mean_cpu = beta_mean.detach().cpu()
@@ -1346,7 +1337,7 @@ def rank_hard_tree_samples_by_jmp(
         "sigma2_mean",
         "log_marginal",
         "log_tree_prior",
-        "jmp",
+        "lmpse",
     ] + tree_cols
 
     beta_cols = [
@@ -1356,42 +1347,42 @@ def rank_hard_tree_samples_by_jmp(
         "sigma2_mean",
         "log_marginal",
         "log_tree_prior",
-        "jmp",
+        "lmpse",
     ] + coef_cols
 
     # ========================================================
-    # Top forests by JMP
+    # Top forests by LMPSE
     # ========================================================
-    df_expr_jmp_sorted = df_expr.sort_values(
-        "jmp",
+    df_expr_lmpse_sorted = df_expr.sort_values(
+        "lmpse",
         ascending=False,
     ).reset_index(drop=True)
 
-    top_ids_jmp = df_expr_jmp_sorted["sample_id"].head(top_k).tolist()
+    top_ids_lmpse = df_expr_lmpse_sorted["sample_id"].head(top_k).tolist()
 
-    expr_top_jmp = df_expr[
-        df_expr["sample_id"].isin(top_ids_jmp)
+    expr_top_lmpse = df_expr[
+        df_expr["sample_id"].isin(top_ids_lmpse)
     ].copy()
 
-    beta_top_jmp = df_beta[
-        df_beta["sample_id"].isin(top_ids_jmp)
+    beta_top_lmpse = df_beta[
+        df_beta["sample_id"].isin(top_ids_lmpse)
     ].copy()
 
-    expr_top_jmp = expr_top_jmp.sort_values(
-        "jmp",
+    expr_top_lmpse = expr_top_lmpse.sort_values(
+        "lmpse",
         ascending=False,
     ).reset_index(drop=True)
 
-    beta_top_jmp = beta_top_jmp.sort_values(
-        "jmp",
+    beta_top_lmpse = beta_top_lmpse.sort_values(
+        "lmpse",
         ascending=False,
     ).reset_index(drop=True)
 
-    expr_top_jmp.insert(0, "rank", range(1, len(expr_top_jmp) + 1))
-    beta_top_jmp.insert(0, "rank", range(1, len(beta_top_jmp) + 1))
+    expr_top_lmpse.insert(0, "rank", range(1, len(expr_top_lmpse) + 1))
+    beta_top_lmpse.insert(0, "rank", range(1, len(beta_top_lmpse) + 1))
 
-    expr_top_jmp = expr_top_jmp[expr_cols]
-    beta_top_jmp = beta_top_jmp[beta_cols]
+    expr_top_lmpse = expr_top_lmpse[expr_cols]
+    beta_top_lmpse = beta_top_lmpse[beta_cols]
 
     # ========================================================
     # Top forests by log p(y | T)
@@ -1430,11 +1421,11 @@ def rank_hard_tree_samples_by_jmp(
     # --------------------------------------------------------
     # Print
     # --------------------------------------------------------
-    print("\n=== TOP samples by JMP = log p(y | T) + log pi(T) ===")
-    print(expr_top_jmp.to_string(index=False))
+    print("\n=== TOP samples by LMPSE ===")
+    print(expr_top_lmpse.to_string(index=False))
 
-    print("\n=== TOP beta means by JMP ===")
-    print(beta_top_jmp.to_string(index=False))
+    print("\n=== TOP beta means by LMPSE ===")
+    print(beta_top_lmpse.to_string(index=False))
 
     print("\n=== TOP samples by log marginal likelihood log p(y | T) ===")
     print(expr_top_logm.to_string(index=False))
@@ -1442,4 +1433,4 @@ def rank_hard_tree_samples_by_jmp(
     print("\n=== TOP beta means by log marginal likelihood ===")
     print(beta_top_logm.to_string(index=False))
 
-    return expr_top_jmp, beta_top_jmp, expr_top_logm, beta_top_logm
+    return expr_top_lmpse, beta_top_lmpse, expr_top_logm, beta_top_logm

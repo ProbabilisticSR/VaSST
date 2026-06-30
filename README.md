@@ -1,18 +1,71 @@
-# VaSST: Variational Symbolic Soft Trees
+# VaSST: Variational Inference for Symbolic Regression using Soft Symbolic Trees
 
-`VaSST` is a probabilistic symbolic regression framework based on **soft ensembles of symbolic trees**, trained using **variational inference** (black-box VI) and combined with **collapsed Bayesian linear regression (BLR)**. It learns **interpretable scientific equations** while providing **principled uncertainty quantification**.
+<p align="center">
+  <a href="https://www.python.org/">
+    <img src="https://img.shields.io/badge/Python-3.13.5-blue" alt="Python">
+  </a>
+  <a href="./LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT">
+  </a>
+  <a href="https://arxiv.org/abs/2602.23561">
+    <img src="https://img.shields.io/badge/arXiv-2602.23561-b31b1b" alt="arXiv">
+  </a>
+  <a href="https://github.com/Roy-SR-007/VaSST/network">
+    <img src="https://img.shields.io/github/forks/Roy-SR-007/VaSST" alt="Forks">
+  </a>
+  <a href="https://github.com/Roy-SR-007/VaSST">
+    <img src="https://img.shields.io/github/repo-size/Roy-SR-007/VaSST" alt="Repo Size">
+  </a>
+  <a href="https://github.com/Roy-SR-007/VaSST/commits/main">
+    <img src="https://img.shields.io/github/last-commit/Roy-SR-007/VaSST" alt="Last Commit">
+  </a>
+  <a href="https://github.com/Roy-SR-007/VaSST/issues">
+    <img src="https://img.shields.io/github/issues/Roy-SR-007/VaSST" alt="Issues">
+  </a>
+  <a href="https://github.com/Roy-SR-007/VaSST/pulls">
+    <img src="https://img.shields.io/github/issues-pr/Roy-SR-007/VaSST" alt="Pull Requests">
+  </a>
+</p>
 
-This repository contains the source code for the `Python` implementation of `VaSST`.
+`VaSST` is a probabilistic symbolic regression framework to learn interpretable scientific equations using ensembles of soft symbolic trees, trained using variational inference. Symbolic model selection is carried out using a posterior-aware score that accounts for uncertainty across competing symbolic structures.
+
+This repository contains the source code for the `Python` implementation of `VaSST` proposed in Roy, S., Dey, P., & Mallick, B. K., *VaSST: Variational Inference for Symbolic Regression using Soft Symbolic Trees*. (Accepted at UAI, 2026; <https://arxiv.org/abs/2602.23561>).
+
+<p align="center">
+  <img src="assets/VaSST_schematic.png" alt="VaSST overview" width="850">
+</p>
+
+<p align="center">
+  The complete VaSST pipeline.
+</p>
+
+---
+
+## Developers and Maintainers
+
+**Somjit Roy**  
+Department of Statistics  
+Texas A&M University, College Station, TX, USA  
+
+📧 Email: [sroy_123@tamu.edu](mailto:sroy_123@tamu.edu)  
+🌐 Website: [https://roy-sr-007.github.io](https://roy-sr-007.github.io)
+
+**Pritam Dey**  
+Department of Statistics  
+Texas A&M University, College Station, TX, USA  
+
+📧 Email: [pritam.dey@tamu.edu](mailto:pritam.dey@tamu.edu)  
+🌐 Website: [https://pritamdey.github.io](https://pritamdey.github.io)
 
 ---
 
 ## Model Overview
 
-$$y_i = \beta_0 + \sum_{k=1}^K \beta_k f_k(x_i) + \epsilon_i$$
+$$y_i = \beta_0 + \sum_{k=1}^K \beta_k f_k(\bm x_i) + \epsilon_i, \quad \epsilon_i\sim \mathrm{N}(0, \sigma^2).$$
 
-* Each $f_k(x)$ is a symbolic expression with a tree representation $\mathsf{T}(f_k)$.
-* Trees are learned via **soft relaxations**.
-* Coefficients are integrated out using **collapsed BLR**.
+* Each $f_k(\bm x)$ is a symbolic expression with a tree representation $\mathsf{T}(f_k)$.
+* Trees are learned via soft relaxations.
+* Coefficients are integrated out using collapsed Bayesian linear regression (BLR).
 
 ---
 
@@ -55,10 +108,9 @@ X, y, y_clean = simulate_data(
     dtype=dtype,
 )
 
-# custom operator set.
+# custom operator set
 ops = make_operator_set(["mul", "sin", "cos"])
 
-# build the VaSST model
 model = VaSST(
     n_features=2,
     n_trees=3,        
@@ -109,12 +161,12 @@ logs = train_VaSST(
     use_progress_bar=False,
 )
 
-# obtain top_k hard symbolic forests by in-sample RMSE
-expr_top, beta_top = rank_hard_tree_samples_by_rmse(
+# rank hard samples by LMPSE
+expr_top_lmpse, beta_top_lmpse, expr_top_logm, beta_top_logm = rank_hard_tree_samples_by_lmpse(
     model=model,
     X=X,
     y=y,
-    n_samples=2000,
+    n_samples=5000,
     include_intercept=True,
     jitter=1e-3,
     standardize_xy=False,
@@ -245,11 +297,11 @@ logs = train_VaSST(
 
 ```python
 
-expr_top, beta_top = rank_hard_tree_samples_by_rmse(
+expr_top_lmpse, beta_top_lmpse, expr_top_logm, beta_top_logm = rank_hard_tree_samples_by_lmpse(
     model=model,
     X=X,
     y=y,
-    n_samples=2000,
+    n_samples=5000,
     include_intercept=True,
     jitter=1e-3,
     standardize_xy=False,
@@ -262,20 +314,20 @@ expr_top, beta_top = rank_hard_tree_samples_by_rmse(
 | Parameter | Type | Description |
 |---|---:|---|
 | `model` | `VaSST` | The trained `VaSST` model from which hard symbolic tree samples are drawn. |
-| `X` | `torch.Tensor` or array-like | Input matrix used to evaluate sampled symbolic forests. Usually this is the training design matrix when ranking by in-sample RMSE. |
-| `y` | `torch.Tensor` or array-like | Response vector used to compute the RMSE of each sampled hard symbolic forest. |
+| `X` | `torch.Tensor` or array-like | Input matrix used to evaluate sampled symbolic forests. |
+| `y` | `torch.Tensor` or array-like | Response vector. |
 | `n_samples` | `int` | Number of hard symbolic forests sampled from the learned variational distribution. |
 | `include_intercept` | `bool` | Whether to include an intercept term when fitting the linear weights on top of the sampled symbolic tree outputs. |
 | `jitter` | `float` | Small positive numerical stabilization term used when solving the regression problem for the sampled symbolic forest. |
 | `standardize_xy` | `bool` | Whether to standardize the input features and response before evaluating and ranking symbolic forests. |
-| `top_k` | `int` | Number of best-ranked symbolic forests to return according to in-sample RMSE. |
+| `top_k` | `int` | Number of best-ranked symbolic forests to return according to LMPSE. |
 | `feature_names` | `List[str] = ["x0", "x1"]` | Names used to display input variables in the extracted symbolic expressions. For example, `x0` and `x1` are used instead of generic column indices. |
 
 ---
 
 ## Data Study using Feynman Symbolic Regression Database (FSReD)
 
-For the Feynman equation database (equation IDs: `I.12.2`, `I.13.12`, `I.12.11`, `II.2.42`), visit:  https://space.mit.edu/home/tegmark/aifeynman.html
+For the Feynman equation database (equation IDs: `I.12.2`, `I.13.12`, `I.12.11`, `II.2.42`, and `III_17_37`), visit:  https://space.mit.edu/home/tegmark/aifeynman.html
 
 ---
 
