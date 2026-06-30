@@ -61,9 +61,9 @@ Texas A&M University, College Station, TX, USA
 
 ## Model Overview
 
-$$y_i = \beta_0 + \sum_{k=1}^K \beta_k f_k(\bm x_i) + \epsilon_i, \quad \epsilon_i\sim \mathrm{N}(0, \sigma^2).$$
+$$y_i = \beta_0 + \sum_{k=1}^K \beta_k f_k(\boldsymbol{x}_i) + \epsilon_i, \quad \epsilon_i\sim \mathrm{N}(0, \sigma^2).$$
 
-* Each $f_k(\bm x)$ is a symbolic expression with a tree representation $\mathsf{T}(f_k)$.
+* Each $f_k(\boldsymbol{x})$ is a symbolic expression with a tree representation $\mathsf{T}(f_k)$.
 * Trees are learned via soft relaxations.
 * Coefficients are integrated out using collapsed Bayesian linear regression (BLR).
 
