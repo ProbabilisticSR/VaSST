@@ -43,8 +43,10 @@ This repository contains the source code for the `Python` implementation of `VaS
 
 ## VaSST: Visual Walkthrough
 
-[Watch the demo video](assets/main.mp4)
-
+https://github.com/user-attachments/assets/042f23b2-1c77-4665-bfc8-e84396f7a1ae
+<p align="center">
+  <em>Created with <a href="https://agentscreation.github.io/ageation/" target="_blank" rel="noopener noreferrer">Ageation</a></em>
+</p>
 
 ---
 
