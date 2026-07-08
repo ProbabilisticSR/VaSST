@@ -41,6 +41,13 @@ This repository contains the source code for the `Python` implementation of `VaS
 
 ---
 
+## VaSST: Visual Walkthrough
+
+[Watch the demo video](assets/main.mp4)
+
+
+---
+
 ## Developers and Maintainers
 
 **Somjit Roy**  
